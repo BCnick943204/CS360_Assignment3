@@ -159,8 +159,14 @@ lock_create(const char *name)
 	
 	//initialize the lock's internal spinlock
 	spinlock_init(&lock->lock_lock);
-
-        return lock;
+	lock->lock_wchan = wchan_create(lock->lk_name);
+	if(lock->lock_wchan==NULL){
+     	kfree(lock->lk_name);
+     	kfree(lock);
+     	return NULL;
+	}
+	
+	return lock;
 }
 
 void
@@ -181,21 +187,23 @@ lock_acquire(struct lock *lock)
 {
         KASSERT(lock != NULL);
         KASSERT(curthread->t_in_interrupt == false);
-
+	KASSERT(!lock_do_i_hold(lock));
 	/* Call this (atomically) before waiting for a lock */
 	
-	int spl = splhigh();	
 
 	//surround the lock-aquire code with a spinlock to avoid
 	//multiple threads trying to access the lock at once
 	spinlock_acquire(&lock->lock_lock);
 
+	int spl = splhigh();
 	// When a thread reaches this point, if there is another thread holding the lock
 	// (the lock's holding_thread pointer is not NULL) then they will be added to the
 	// waiting channel.
+	
+	HANGMAN_WAIT(&curthread->t_hangman, &lock->lk_hangman);
+
 	while(lock->holding_thread != NULL)
 	{
-	HANGMAN_WAIT(&curthread->t_hangman, &lock->lk_hangman);
 	wchan_sleep(lock->lock_wchan, &lock->lock_lock);
 	}
 	
@@ -203,11 +211,11 @@ lock_acquire(struct lock *lock)
 	lock->holding_thread = curthread;
 	HANGMAN_ACQUIRE(&curthread->t_hangman, &lock->lk_hangman);
 
-	spinlock_release(&lock->lock_lock);
-	
 	splx(spl);
-}
+	
+	spinlock_release(&lock->lock_lock);
 
+}
 void
 lock_release(struct lock *lock)
 {
@@ -216,21 +224,27 @@ lock_release(struct lock *lock)
 	//ensure that the calling thread has the lock
 	KASSERT(lock->holding_thread == curthread);
 
+	spinlock_acquire(&lock->lock_lock);
+	
+
 	int spl = splhigh();
 
 	//surround the release code with spinlocks
 	//to avoid multiple threads waking up
 	//multiple other threads
-	spinlock_acquire(&lock->lock_lock);
 	lock->holding_thread = NULL;
-	HANGMAN_RELEASE(&curthread->t_hangman, &lock->lk_hangman);
 
 	//release a thread from the waiting channel
 	wchan_wakeone(lock->lock_wchan, &lock->lock_lock);
 
+	HANGMAN_RELEASE(&curthread->t_hangman, &lock->lk_hangman);
+
+
+	splx(spl);
 	spinlock_release(&lock->lock_lock);
 	
-	splx(spl);
+
+	
 }
 
 bool
