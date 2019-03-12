@@ -73,13 +73,22 @@ void V(struct semaphore *);
  * (should be) made internally.
  */
 struct lock {
-        char *lk_name;
+        
+	char *lk_name;
+	
 	//the lock needs a waiting channel to block threads
 	struct wchan *lock_wchan;
+	
+	//the spinlock is used to make certain sections critical and
+	//is also used by the waiting channel
 	struct spinlock lock_lock;
-	//use a thread pointer to point to the holding thread
+	
+	//use a thread pointer to point to the thread that
+	//is currently holding the lock
 	volatile struct thread *holding_thread; 
-        HANGMAN_LOCKABLE(lk_hangman);   /* Deadlock detector hook. */
+        
+
+	HANGMAN_LOCKABLE(lk_hangman);   /* Deadlock detector hook. */
 };
 
 struct lock *lock_create(const char *name);

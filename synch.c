@@ -157,11 +157,22 @@ lock_create(const char *name)
 
 	HANGMAN_LOCKABLEINIT(&lock->lk_hangman, lock->lk_name);
 	
+	//the inital state of the holding thread must be NULL
+	//because its value is used to check if the lock is 
+	//available
+	lock->holding_thread = NULL;
+	
 	//initialize the lock's internal spinlock
 	spinlock_init(&lock->lock_lock);
+	
+	//create the waiting channel for the lock
 	lock->lock_wchan = wchan_create(lock->lk_name);
+	
+	//if the waiting channel is unable to be created
+	//the function will deallocate the lock and return NULL 
 	if(lock->lock_wchan==NULL){
-     	kfree(lock->lk_name);
+     	spinlock_cleanup(&lock->lock_lock);
+	kfree(lock->lk_name);
      	kfree(lock);
      	return NULL;
 	}
@@ -173,9 +184,8 @@ void
 lock_destroy(struct lock *lock)
 {
         KASSERT(lock != NULL);
-/*Deallocate the spinlock, waiting channel, and
-* the lock and its name
-*/
+	//Deallocate the spinlock, waiting channel, the
+	//lock and its name
 	spinlock_cleanup(&lock->lock_lock);
 	wchan_destroy(lock->lock_wchan);
         kfree(lock->lk_name);
@@ -185,23 +195,30 @@ lock_destroy(struct lock *lock)
 void
 lock_acquire(struct lock *lock)
 {
-        KASSERT(lock != NULL);
-        KASSERT(curthread->t_in_interrupt == false);
+        //Ensure that the lock being passed in exists
+	KASSERT(lock != NULL);
+        
+	//Check that the calling thread is not being interrupted
+	KASSERT(curthread->t_in_interrupt == false);
+	
+	//Ensure that the calling thread does not already hold the lock
 	KASSERT(!lock_do_i_hold(lock));
-	/* Call this (atomically) before waiting for a lock */
 	
 
 	//surround the lock-aquire code with a spinlock to avoid
 	//multiple threads trying to access the lock at once
 	spinlock_acquire(&lock->lock_lock);
 
+	//Make the following section atomic by setting the Priority
+	//Level to its highest
 	int spl = splhigh();
-	// When a thread reaches this point, if there is another thread holding the lock
-	// (the lock's holding_thread pointer is not NULL) then they will be added to the
-	// waiting channel.
 	
 	HANGMAN_WAIT(&curthread->t_hangman, &lock->lk_hangman);
 
+
+        // When a thread reaches this point, if there is another thread holding the lock
+        // (the lock's holding_thread pointer is not NULL) then they will be added to the
+        // waiting channel.
 	while(lock->holding_thread != NULL)
 	{
 	wchan_sleep(lock->lock_wchan, &lock->lock_lock);
@@ -210,7 +227,10 @@ lock_acquire(struct lock *lock)
 	//the current thread will aquire the lock
 	lock->holding_thread = curthread;
 	HANGMAN_ACQUIRE(&curthread->t_hangman, &lock->lk_hangman);
+	
 
+	//Restore the Priority Level to the level it was at before the 
+	//call
 	splx(spl);
 	
 	spinlock_release(&lock->lock_lock);
@@ -220,38 +240,42 @@ void
 lock_release(struct lock *lock)
 {
 
-        KASSERT(lock != NULL);
+        //Ensure that the lock being passed in exists
+	KASSERT(lock != NULL);
+	
 	//ensure that the calling thread has the lock
 	KASSERT(lock->holding_thread == curthread);
 
+	//use a spinlock to ensure multiple threads do not try to release the
+	//lock at the same time (potentially waking up multiple threads)
 	spinlock_acquire(&lock->lock_lock);
 	
 
+	//Make the following section atomic by setting the Priority
+        //Level to its highest
 	int spl = splhigh();
 
-	//surround the release code with spinlocks
-	//to avoid multiple threads waking up
-	//multiple other threads
+	//The lock is released
 	lock->holding_thread = NULL;
 
 	//release a thread from the waiting channel
 	wchan_wakeone(lock->lock_wchan, &lock->lock_lock);
 
 	HANGMAN_RELEASE(&curthread->t_hangman, &lock->lk_hangman);
-
-
+        
+	//Restore the Priority Level to the level it was at before the 
+        //call
 	splx(spl);
+	
 	spinlock_release(&lock->lock_lock);
-	
-
-	
+		
 }
 
 bool
 lock_do_i_hold(struct lock *lock)
 {
-//return whether the lock's thread pointer is 
-//equal to the current thread
+	//returns true when the calling thread 
+	//holds the lock
         KASSERT(lock != NULL);
 	
 	return (lock->holding_thread == curthread);
